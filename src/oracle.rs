@@ -122,6 +122,9 @@ where
     /// One or more CFD providers.
     pub cfds: Vec<Arc<dyn CfdProvider + Send + Sync>>,
 
+    ///
+    pub name: String,
+
     /// Last good mark after all guards.
     pub last_good_mark: Option<IndexTick>,
 
@@ -155,10 +158,15 @@ where
             publisher,
             cme,
             cfds,
+            name: "".to_string(),
             last_good_mark: None,
             funding_ref_ema: Ema::new(0.005), // ~slow; adjust by cfg if desired
             funding_engine,
         }
+    }
+
+    fn name(&self) -> &'static str {
+        std::any::type_name::<Self>()
     }
 
     /// Perform one tick: collect CFD quotes, build a consensus mark, run guards, publish.

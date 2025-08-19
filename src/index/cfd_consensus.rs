@@ -17,6 +17,20 @@ impl CfdConsensus {
         Self { symbol, expo, tau_ms, mad_k }
     }
 
+    /// Returns median price if at least one price present.
+    pub fn fuse(&self, mut prices: Vec<f64>) -> Option<f64> {
+        if prices.is_empty() {
+            return None;
+        }
+        prices.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mid = prices.len() / 2;
+        if prices.len() % 2 == 1 {
+            Some(prices[mid])
+        } else {
+            Some((prices[mid - 1] + prices[mid]) / 2.0)
+        }
+    }
+
     fn median(prices: &mut [f64]) -> f64 {
         prices.sort_by(|a,b| a.partial_cmp(b).unwrap());
         prices[prices.len()/2]

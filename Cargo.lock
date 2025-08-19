@@ -1248,6 +1248,7 @@ version = "0.1.0"
 dependencies = [
  "alloy",
  "anchor-lang",
+ "anyhow",
  "async-trait",
  "axum",
  "backon",
@@ -1276,6 +1277,7 @@ dependencies = [
  "sha2 0.10.9",
  "smallvec",
  "sqlx",
+ "thiserror 1.0.69",
  "tokio",
  "toml",
  "toml_edit",

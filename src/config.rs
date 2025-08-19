@@ -26,40 +26,12 @@ pub struct OracleConfig {
     pub max_step_per_tick: f64,      // e.g., 0.02 = 2% clamp vs last mark
 }
 
-impl Default for OracleConfig {
-    fn default() -> Self {
-        Self {
-            symbol: "LH".into(),
-            expo: -8,
-            poll_ms: 750,
-            cfd_twap_sec: 30,
-            cfd_median_sec: 600,
-            cfd_max_staleness_ms: 90_000,
-            cfd_jump_pct: 0.05,
-            cmf_target_days: 30.0,
-            roll_hike_im_pct: 0.3,
-            funding_kappa: 0.5,
-            funding_cap: 0.004,
-            funding_interval_sec: 8 * 3600,
-            trading_hours_only: true,
-            mode_cfd_only: false,
-            cfd_min_fresh: 0,
-            cfd_tau_ms: 0,
-            cfd_mad_k: 0.0,
-            cfd_dispersion_bps_max: 0,
-            hours_guard: "".to_string(),
-            max_step_per_tick: 0.0,
-        }
-    }
-}
-
 #[inline]
 pub fn ms(d: u64) -> std::time::Duration { Duration::from_millis(d) }
 
 impl Default for OracleConfig {
     fn default() -> Self {
         let mut c = Self {
-            // ...existing defaults...
             symbol: "".to_string(),
             expo: 0,
             poll_ms: 0,

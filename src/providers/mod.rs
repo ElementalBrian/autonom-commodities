@@ -1,3 +1,4 @@
+use anchor_lang::prelude::thiserror;
 // src/providers/mod.rs
 use crate::types::{FuturesLeg, CfdTick};
 use async_trait::async_trait;
