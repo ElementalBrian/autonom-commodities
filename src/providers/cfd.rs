@@ -63,8 +63,6 @@ impl NinjasCfd {
 
 #[derive(Debug, Deserialize)]
 struct NinjasResp {
-    // These fields are present but not strictly required downstream.
-    exchange: Option<String>,
     name: String,
     price: f64,
     updated: i64, // unix seconds
@@ -81,6 +79,15 @@ impl CfdProvider for NinjasCfd {
         for (i, backoff_ms) in [0_u64, 250, 500, 1000].into_iter().enumerate() {
             if backoff_ms > 0 {
                 tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+            }
+
+            fn parse_retry_after(h: &reqwest::header::HeaderMap) -> Option<Duration> {
+                use std::time::Duration;
+                let v = h.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+                if let Ok(secs) = v.parse::<u64>() {
+                    return Some(Duration::from_secs(secs));
+                }
+                None // (date form optional; skip to keep deps light)
             }
 
             // Build request (use mock base_url in tests)
@@ -112,11 +119,15 @@ impl CfdProvider for NinjasCfd {
 
             // Retry on 429 and 5xx
             if status.as_u16() == 429 || status.is_server_error() {
+                // Prefer server-provided wait if available
+                if let Some(wait) = parse_retry_after(resp.headers()) {
+                    tokio::time::sleep(wait).await;
+                }
                 last_err = Some(anyhow!("HTTP {}", status));
                 continue;
             }
 
-            // Other 4xx are fatal (bad request, unauthorized, etc.)
+            // Other 4xx are fatal
             return Err(anyhow!("API Ninjas HTTP error: {}", status));
         }
 
@@ -162,7 +173,7 @@ mod tests {
     fn client_pointing_to(server: &MockServer) -> NinjasCfd {
         std::env::set_var("API_NINJAS_API_KEY", "test_key");
         std::env::set_var("API_NINJAS_BASE_URL", server.base_url());
-        let mut c = NinjasCfd::from_env().unwrap();
+        let c = NinjasCfd::from_env().unwrap();
         c
     }
 

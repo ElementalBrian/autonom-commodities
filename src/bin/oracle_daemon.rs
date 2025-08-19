@@ -15,8 +15,8 @@ use autonom::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // --- args: --config <path>, defaults to config/oracle.toml
-    let mut cfg_path = String::from("config/oracle.toml");
+    let mut cfg_path = std::env::args().skip_while(|a| a != "--config").nth(1)
+        .unwrap_or_else(|| "config/oracle.toml".to_string());
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--config" {
@@ -27,16 +27,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // --- load OracleConfig from TOML; fall back to Default if missing/unparseable
-    let cfg: OracleConfig = std::fs::read_to_string(&cfg_path)
-        .ok()
-        .and_then(|s| toml::from_str::<OracleConfig>(&s).ok())
-        .unwrap_or_else(|| {
-            eprintln!(
-                "warning: couldn't read/parse {}, using OracleConfig::default()",
-                cfg_path
-            );
+    let cfg = match std::fs::read_to_string(&cfg_path) {
+        Ok(s) => match toml::from_str::<OracleConfig>(&s) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("CONFIG DESERIALIZE ERROR [{}]:\n{}", cfg_path, e);
+                OracleConfig::default()
+            }
+        },
+        Err(e) => {
+            eprintln!("CONFIG READ ERROR [{}]:\n{}", cfg_path, e);
             OracleConfig::default()
-        });
+        }
+    };
 
     // --- publisher (no Arc; Publisher is implemented for the concrete type)
     let publisher = StdoutPublisher {};

@@ -4,28 +4,41 @@ use std::time::Duration;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct OracleConfig {
-    pub symbol: String,             // "LH"
-    pub expo: i8,                   // -8
-    pub poll_ms: u64,               // 500-1500ms typical (ingestion loop)
-    pub cfd_twap_sec: u32,          // 30-60s
-    pub cfd_median_sec: u32,        // 300-600s (spike suppression)
-    pub cfd_max_staleness_ms: u64,  // 90_000
-    pub cfd_jump_pct: f64,          // 0.05 (5%) reject rule outside roll
-    pub cmf_target_days: f64,       // 30.0
-    pub roll_hike_im_pct: f64,      // 0.25..0.5 applied downstream (advisory)
-    pub funding_kappa: f64,         // 0.5
-    pub funding_cap: f64,           // 0.004 per interval
-    pub funding_interval_sec: u32,  // 8*3600
-    pub trading_hours_only: bool,   // true
-    pub mode_cfd_only: bool,         // ← set true when you have no CME
-    pub cfd_min_fresh: usize,        // min providers needed (≥2 ideal)
-    pub cfd_tau_ms: u64,             // freshness decay for weighting (e.g. 20_000)
-    pub cfd_mad_k: f64,              // MAD threshold for outliers (e.g. 6.0)
-    pub cfd_dispersion_bps_max: u32, // if providers disagree > X bps, mark "degraded"
-    pub hours_guard: String,         // "cme" | "vendor" | "off"
-    pub max_step_per_tick: f64,      // e.g., 0.02 = 2% clamp vs last mark
+    pub symbol: String,
+    pub expo: i8,
+    #[serde(default = "d_poll_ms")]              pub poll_ms: u64,
+    #[serde(default)]                            pub cfd_twap_sec: u32,
+    #[serde(default)]                            pub cfd_median_sec: u32,
+    #[serde(default = "d_stale_ms")]             pub cfd_max_staleness_ms: u64,
+    #[serde(default = "d_jump_pct")]             pub cfd_jump_pct: f64,
+    #[serde(default = "d_cmf_days")]             pub cmf_target_days: f64,
+    #[serde(default = "d_roll_hike")]            pub roll_hike_im_pct: f64,
+    #[serde(default = "d_funding_kappa")]        pub funding_kappa: f64,
+    #[serde(default = "d_funding_cap")]          pub funding_cap: f64,
+    #[serde(default = "d_funding_interval")]     pub funding_interval_sec: u32,
+    #[serde(default)]                            pub trading_hours_only: bool,
+    #[serde(default)]                            pub mode_cfd_only: bool,
+    #[serde(default = "d_min_fresh")]            pub cfd_min_fresh: usize,
+    #[serde(default = "d_tau_ms")]               pub cfd_tau_ms: u64,
+    #[serde(default = "d_mad_k")]                pub cfd_mad_k: f64,
+    #[serde(default = "d_dispersion_bps")]       pub cfd_dispersion_bps_max: u32,
+    #[serde(default = "d_hours_guard")]          pub hours_guard: String,
+    #[serde(default = "d_max_step")]             pub max_step_per_tick: f64,
 }
-
+fn d_poll_ms() -> u64 { 2000 }
+fn d_stale_ms() -> u64 { 90_000 }
+fn d_jump_pct() -> f64 { 0.05 }
+fn d_cmf_days() -> f64 { 30.0 }
+fn d_roll_hike() -> f64 { 0.25 }
+fn d_funding_kappa() -> f64 { 0.5 }
+fn d_funding_cap() -> f64 { 0.004 }
+fn d_funding_interval() -> u32 { 8*3600 }
+fn d_min_fresh() -> usize { 2 }
+fn d_tau_ms() -> u64 { 8000 }
+fn d_mad_k() -> f64 { 3.5 }
+fn d_dispersion_bps() -> u32 { 35 }
+fn d_hours_guard() -> String { "vendor".into() }
+fn d_max_step() -> f64 { 0.01 }
 #[inline]
 pub fn ms(d: u64) -> std::time::Duration { Duration::from_millis(d) }
 
