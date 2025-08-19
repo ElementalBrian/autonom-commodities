@@ -1,0 +1,25 @@
+# Rust
+/target
+**/*.rlib
+
+# Node / misc
+/node_modules
+dist
+.DS_Store
+
+# Local env & secrets
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.keystore
+config/*secrets*.toml
+config/oracle.toml
+web2_cache.json
+/var/lib/autonom/web2_cache.json
+
+# Logs & junk
+*.log
+tmp/

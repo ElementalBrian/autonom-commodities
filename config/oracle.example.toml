@@ -1,0 +1,100 @@
+# =========================
+# Oracle runtime config
+# =========================
+[oracle]
+# Instrument you’re marking (string your CFD providers recognize)
+symbol = "LEAN_HOGS_PERP"
+
+# Fixed-point scale: -8 means prices are published as integer * 1e-8
+expo = -8
+
+# Run in CFD-only mode (no CME reference available)
+mode_cfd_only = true
+
+# Consensus & staleness knobs
+# - tau controls the freshness weight decay (in ms)
+# - mad_k controls the outlier cutoff (in Median Absolute Deviation units)
+# - cfd_min_fresh => require at least this many fresh quotes to mark
+# - cfd_dispersion_bps_max is a soft guard; we still publish, but note dispersion
+cfd_tau_ms = 8000
+cfd_mad_k = 3.5
+cfd_min_fresh = 2
+cfd_dispersion_bps_max = 35
+
+# Max per-tick move clamp vs last good mark (as a fraction; 0.01 = 1%)
+max_step_per_tick = 0.01
+
+# Trading-hours guard:
+#   "off"    -> always on,
+#   "vendor" -> follow vendor (CFDs are ~23x5), practically always on here,
+#   "cme"    -> if you later add a calendar, use it
+hours_guard = "vendor"
+
+# How often the oracle ticks (collects quotes & marks), in ms
+tick_interval_ms = 1000
+
+# Optional: circuit breaker threshold (per-minute normalized move); if omitted, defaults to 0.07
+circuit_breaker_per_min = 0.07
+
+# =========================
+# CFD Providers
+# =========================
+# Each item corresponds to one implementation of the `CfdProvider` trait.
+# `name` should match what your provider returns from `name()` so source tagging is consistent.
+
+[[cfd_providers]]
+name = "api-ninjas"
+# provider-specific settings (read by your provider impl)
+timeout_ms = 850
+weight = 1.0
+enabled = true
+
+[[cfd_providers]]
+name = "openwebninja"
+timeout_ms = 850
+weight = 1.0
+enabled = true
+
+# You can add more providers:
+# [[cfd_providers]]
+# name = "brokerX"
+# timeout_ms = 600
+# weight = 0.8
+# enabled = true
+
+# =========================
+# Publishing sink
+# =========================
+# Configure how/where marks & funding are published by your `Publisher` impl.
+
+[publish]
+# mode = "web2_cache" | "redis" | "stdout" | "kafka"  (depends on your Publisher)
+mode = "web2_cache"
+
+# If using web2 cache: path must match your web2 server’s cache path (or IPC channel)
+web2_cache_path = "/var/lib/autonom/web2_cache.json"
+
+# If using Redis/Kafka/etc, add their connection settings here.
+# redis_url = "redis://127.0.0.1:6379/0"
+# kafka_brokers = "localhost:9092"
+
+# =========================
+# Funding engine
+# =========================
+[funding]
+# If no CME reference is available, the oracle uses a slow EMA as the reference.
+# You can shape funding behavior here; your FundingEngine reads these knobs.
+
+# Positive value means perps trade above reference -> longs pay shorts (typical)
+target_annualized_bps = 500      # 5% annualized as 500 bps
+clamp_bps_per_hour    = 8        # cap funding per-hour to avoid spikes
+ema_alpha             = 0.005    # must match the EMA used in oracle for ref
+
+# =========================
+# Metrics (optional)
+# =========================
+[metrics]
+# Enable only if you compiled with `--features metrics` and wired a metrics registry.
+enabled = false
+namespace = "oracle"
+
