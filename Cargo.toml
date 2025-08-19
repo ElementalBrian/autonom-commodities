@@ -20,6 +20,7 @@ dxfeed = []
 owninja = []
 
 [dependencies]
+httpmock = "0.7"
 thiserror = "1"
 # Make Prometheus optional so you can build without it.
 prometheus = { version = "0.13", optional = true }
@@ -51,7 +52,8 @@ smallvec = "1.15.0"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio-rustls", "chrono", "macros", "migrate"] }
 # Drop "uuid" if you don't map UUID columns in SQLite:
 # sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio-rustls", "chrono", "macros", "migrate", "uuid"] }
-tokio = { version = "1.44.2", features = ["full"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "full"] }
+
 toml = "0.5.11"
 tonic = "0.13.0"
 tower = { version = "0.5.2", features = ["load-shed"] }

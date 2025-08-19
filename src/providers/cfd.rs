@@ -18,6 +18,7 @@ pub struct NinjasCfd {
     api_key: String,
     /// Map your internal symbols to API Ninjas `name` values.
     sym_map: HashMap<String, &'static str>,
+    base_url: String,
 }
 
 impl NinjasCfd {
@@ -41,13 +42,14 @@ impl NinjasCfd {
         sym_map.insert("GOLD_PERP".into(), "gold");
         sym_map.insert("SILVER_PERP".into(), "silver");
 
+        let base_url = std::env::var("API_NINJAS_BASE_URL")
+            .unwrap_or_else(|_| "https://api.api-ninjas.com".to_string());
+
         Ok(Self {
-            client: Client::builder()
-                .user_agent("autonom-oracle/1.0")
-                .build()
-                .context("building reqwest client")?,
+            client: Client::builder().user_agent("autonom-oracle/1.0").build()?,
             api_key,
             sym_map,
+            base_url,
         })
     }
 
@@ -76,11 +78,7 @@ impl CfdProvider for NinjasCfd {
 
     async fn latest(&self, symbol: &str) -> Result<CfdQuote> {
         let ninjas_name = self.map_symbol(symbol)?;
-        let url = format!(
-            "https://api.api-ninjas.com/v1/commodityprice?name={}",
-            ninjas_name
-        );
-
+        let url = format!("{}/v1/commodityprice?name={}", self.base_url, ninjas_name);
         // Light retry/backoff to be gentle on the API and survive transient errors.
         let mut last_err: Option<anyhow::Error> = None;
         for backoff_ms in [0_u64, 250, 500, 1000] {
@@ -154,5 +152,85 @@ impl CfdProvider for OwninjaCfd {
             price: px,
             ts_ms: now,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use httpmock::{MockServer, Method::GET};
+
+    // Helper to build a NinjasCfd pointing to our mock server
+    fn client_pointing_to(server: &MockServer) -> NinjasCfd {
+        std::env::set_var("API_NINJAS_API_KEY", "test_key");
+        std::env::set_var("API_NINJAS_BASE_URL", server.base_url());
+        let mut c = NinjasCfd::from_env().unwrap();
+        c
+    }
+
+    #[tokio::test]
+    async fn ninjas_happy_path() {
+        let server = MockServer::start_async().await;
+
+        // Return a realistic payload
+        let m = server.mock_async(|when, then| {
+            when.method(GET)
+                .path("/v1/commodityprice")
+                .query_param("name", "lean_hogs")
+                .header("X-Api-Key", "test_key");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"exchange":"CME","name":"Lean Hogs Futures","price":89.5,"updated":1700000000}"#);
+        }).await;
+
+        let mut ninjas = client_pointing_to(&server);
+        // Ensure symbol map contains LEAN_HOGS_PERP in your real code
+        let q = ninjas.latest("LEAN_HOGS_PERP").await.unwrap();
+        assert_eq!(q.price, 89.5);
+        assert_eq!(q.ts_ms, 1700000000 * 1000);
+        m.assert();
+    }
+
+    #[tokio::test]
+    async fn ninjas_retries_then_succeeds() {
+        let server = MockServer::start_async().await;
+
+        // First two attempts 429, then OK
+        let _m1 = server.mock_async(|when, then| {
+            when.method(GET).path("/v1/commodityprice");
+            then.status(429);
+        }).await;
+        let _m2 = server.mock_async(|when, then| {
+            when.method(GET).path("/v1/commodityprice");
+            then.status(429);
+        }).await;
+        let m3 = server.mock_async(|when, then| {
+            when.method(GET).path("/v1/commodityprice");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"exchange":null,"name":"Lean Hogs Futures","price":90.0,"updated":1700001234}"#);
+        }).await;
+
+        let ninjas = client_pointing_to(&server);
+        let q = ninjas.latest("LEAN_HOGS_PERP").await.unwrap();
+        assert_eq!(q.price, 90.0);
+        assert_eq!(q.ts_ms, 1700001234 * 1000);
+        m3.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn ninjas_invalid_price_is_error() {
+        let server = MockServer::start_async().await;
+
+        let _m = server.mock_async(|when, then| {
+            when.method(GET).path("/v1/commodityprice");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"exchange":null,"name":"Lean Hogs Futures","price":0.0,"updated":1700001234}"#);
+        }).await;
+
+        let ninjas = client_pointing_to(&server);
+        let err = ninjas.latest("LEAN_HOGS_PERP").await.err().unwrap();
+        assert!(err.to_string().contains("invalid price"));
     }
 }
