@@ -1,48 +1,158 @@
 use crate::providers::CfdProvider;
 use crate::types::{CfdQuote, CfdSource};
-use anyhow::Error;
-use rand::Rng;
+use anyhow::{anyhow, Context, Result};
+use chrono::Utc;
+use rand::{rng, Rng};
+use reqwest::Client;
+use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
-/// Simple shared state for a random-walk price per provider
-static NINJAS_PX: OnceLock<Mutex<f64>> = OnceLock::new();
+/// Simple shared state for a random-walk price for the mock provider.
 static OWNINJA_PX: OnceLock<Mutex<f64>> = OnceLock::new();
 
-pub struct NinjasCfd;
-pub struct OwninjaCfd;
+/// Live CFD provider backed by API Ninjas' /v1/commodityprice endpoint.
+pub struct NinjasCfd {
+    client: Client,
+    api_key: String,
+    /// Map your internal symbols to API Ninjas `name` values.
+    sym_map: HashMap<String, &'static str>,
+}
 
-#[async_trait::async_trait]
-impl CfdProvider for NinjasCfd {
-    fn name(&self) -> &'static str { "ninjas" }
+impl NinjasCfd {
+    /// Reads API key from env. Supports `API_NINJAS_API_KEY` (preferred) and `API_NINJAS_KEY`.
+    pub fn from_env() -> Result<Self> {
+        let api_key = std::env::var("API_NINJAS_API_KEY")
+            .or_else(|_| std::env::var("API_NINJAS_KEY"))
+            .map_err(|_| anyhow!("Set API_NINJAS_API_KEY (or API_NINJAS_KEY)"))?;
 
-    async fn latest(&self, _symbol: &str) -> Result<CfdQuote, Error> {
-        let now = chrono::Utc::now().timestamp_millis();
-        let px = {
-            let m = NINJAS_PX.get_or_init(|| Mutex::new(0.905));
-            let mut p = m.lock().unwrap();
-            // ~±5 bps shock
-            let shock: f64 = rand::thread_rng().gen_range(-0.0005..0.0005);
-            *p = (*p * (1.0 + shock)).max(0.1);
-            *p
-        };
-        Ok(CfdQuote { src: CfdSource::Ninjas, price: px, ts_ms: now })
+        let mut sym_map = HashMap::new();
+        // Extend as needed
+        sym_map.insert("LEAN_HOGS_PERP".into(), "lean_hogs");
+        sym_map.insert("LIVE_CATTLE_PERP".into(), "live_cattle");
+        sym_map.insert("FEEDER_CATTLE_PERP".into(), "feeder_cattle");
+        sym_map.insert("CORN_PERP".into(), "corn");
+        sym_map.insert("SOYBEAN_PERP".into(), "soybean");
+        sym_map.insert("WHEAT_PERP".into(), "wheat");
+        sym_map.insert("COFFEE_PERP".into(), "coffee");
+        sym_map.insert("COCOA_PERP".into(), "cocoa");
+        sym_map.insert("SUGAR_PERP".into(), "sugar");
+        sym_map.insert("GOLD_PERP".into(), "gold");
+        sym_map.insert("SILVER_PERP".into(), "silver");
+
+        Ok(Self {
+            client: Client::builder()
+                .user_agent("autonom-oracle/1.0")
+                .build()
+                .context("building reqwest client")?,
+            api_key,
+            sym_map,
+        })
+    }
+
+    fn map_symbol<'a>(&'a self, symbol: &str) -> Result<&'a str> {
+        self.sym_map
+            .get(symbol)
+            .copied()
+            .ok_or_else(|| anyhow!("unsupported symbol for API Ninjas: {}", symbol))
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct NinjasResp {
+    // These fields are present but not strictly required downstream.
+    exchange: Option<String>,
+    name: String,
+    price: f64,
+    updated: i64, // unix seconds
+}
+
+#[async_trait::async_trait]
+impl CfdProvider for NinjasCfd {
+    fn name(&self) -> &'static str {
+        "ninjas"
+    }
+
+    async fn latest(&self, symbol: &str) -> Result<CfdQuote> {
+        let ninjas_name = self.map_symbol(symbol)?;
+        let url = format!(
+            "https://api.api-ninjas.com/v1/commodityprice?name={}",
+            ninjas_name
+        );
+
+        // Light retry/backoff to be gentle on the API and survive transient errors.
+        let mut last_err: Option<anyhow::Error> = None;
+        for backoff_ms in [0_u64, 250, 500, 1000] {
+            if backoff_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+            }
+
+            match self
+                .client
+                .get(&url)
+                .header("X-Api-Key", &self.api_key)
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    let resp = resp.error_for_status().context("API Ninjas HTTP error")?;
+                    let data: NinjasResp = resp.json().await.context("decoding Ninjas JSON")?;
+
+                    if !(data.price.is_finite() && data.price > 0.0) {
+                        return Err(anyhow!("API Ninjas returned invalid price: {}", data.price));
+                    }
+
+                    let ts_ms = if data.updated > 0 {
+                        data.updated * 1000
+                    } else {
+                        Utc::now().timestamp_millis()
+                    };
+
+                    return Ok(CfdQuote {
+                        src: CfdSource::Ninjas,
+                        price: data.price, // expo scaling happens downstream
+                        ts_ms,
+                    });
+                }
+                Err(e) => {
+                    last_err = Some(anyhow!(e));
+                    continue;
+                }
+            }
+        }
+
+        Err(anyhow!(
+            "ninjas request failed after retries: {:?}",
+            last_err
+        ))
+    }
+}
+
+/// Deterministic mock that produces a tiny random walk (useful as a fallback/consensus peer).
+pub struct OwninjaCfd;
+
 #[async_trait::async_trait]
 impl CfdProvider for OwninjaCfd {
-    fn name(&self) -> &'static str { "owninja" }
+    fn name(&self) -> &'static str {
+        "owninja"
+    }
 
-    async fn latest(&self, _symbol: &str) -> Result<CfdQuote, Error> {
-        let now = chrono::Utc::now().timestamp_millis();
+    async fn latest(&self, _symbol: &str) -> Result<CfdQuote> {
+        let now = Utc::now().timestamp_millis();
         let px = {
             let m = OWNINJA_PX.get_or_init(|| Mutex::new(0.907));
             let mut p = m.lock().unwrap();
-            // ~±6 bps shock with tiny bias
-            let shock: f64 = rand::thread_rng().gen_range(-0.0006..0.0006) + 0.00002;
+            let mut r = rng();
+            // Small drift + bounded noise, using rand 0.9 API to avoid deprecation warnings.
+            let shock: f64 = r.random_range(-0.0006..0.0006) + 0.00002;
             *p = (*p * (1.0 + shock)).max(0.1);
             *p
         };
-        Ok(CfdQuote { src: CfdSource::Owninja, price: px, ts_ms: now })
+        Ok(CfdQuote {
+            src: CfdSource::Owninja,
+            price: px,
+            ts_ms: now,
+        })
     }
 }

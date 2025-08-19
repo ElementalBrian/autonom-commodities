@@ -41,11 +41,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- publisher (no Arc; Publisher is implemented for the concrete type)
     let publisher = StdoutPublisher {};
 
+    let ninjas = std::sync::Arc::new(NinjasCfd::from_env()?);
+    let owninja = std::sync::Arc::new(OwninjaCfd); // keep your mock if you want diversity
+
     // --- CFD providers (add/remove as your project implements them)
-    let cfds: Vec<Arc<dyn CfdProvider + Send + Sync>> = vec![
-        Arc::new(NinjasCfd {}),
-        Arc::new(OwninjaCfd {}),
-    ];
+    let cfd_providers: Vec<std::sync::Arc<dyn CfdProvider + Send + Sync>> =
+        vec![ninjas, owninja];
 
     // --- funding engine (simple default; adjust if you expose config knobs)
     let funding_engine = FundingEngine::new(
@@ -56,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // NOTE: this matches your current Oracle::new signature:
     // Oracle::new(cfg, publisher, cfds, funding_engine)
-    let mut oracle = Oracle::new(cfg, publisher, cfds, funding_engine);
+    let mut oracle = Oracle::new(cfg, publisher, cfd_providers, funding_engine);
 
     // drive ticks at cfg.poll_ms (fallback 1000ms if unset/zero)
     let tick_ms = if oracle.cfg.poll_ms == 0 { 1000 } else { oracle.cfg.poll_ms };
