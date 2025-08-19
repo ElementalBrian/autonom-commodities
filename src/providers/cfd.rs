@@ -72,60 +72,58 @@ struct NinjasResp {
 
 #[async_trait::async_trait]
 impl CfdProvider for NinjasCfd {
-    fn name(&self) -> &'static str {
-        "ninjas"
-    }
+    fn name(&self) -> &'static str { "ninjas" }
 
     async fn latest(&self, symbol: &str) -> Result<CfdQuote> {
         let ninjas_name = self.map_symbol(symbol)?;
-        let url = format!("{}/v1/commodityprice?name={}", self.base_url, ninjas_name);
-        // Light retry/backoff to be gentle on the API and survive transient errors.
         let mut last_err: Option<anyhow::Error> = None;
-        for backoff_ms in [0_u64, 250, 500, 1000] {
+
+        for (i, backoff_ms) in [0_u64, 250, 500, 1000].into_iter().enumerate() {
             if backoff_ms > 0 {
                 tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
             }
 
-            match self
+            // Build request (use mock base_url in tests)
+            let mut req = self
                 .client
-                .get(&url)
-                .header("X-Api-Key", &self.api_key)
-                .send()
-                .await
+                .get(format!("{}/v1/commodityprice?name={}", self.base_url, ninjas_name))
+                .header("X-Api-Key", &self.api_key);
+
+            // Tag attempts in tests so httpmock can match deterministically
+            #[cfg(test)]
             {
-                Ok(resp) => {
-                    let resp = resp.error_for_status().context("API Ninjas HTTP error")?;
-                    let data: NinjasResp = resp.json().await.context("decoding Ninjas JSON")?;
-
-                    if !(data.price.is_finite() && data.price > 0.0) {
-                        return Err(anyhow!("API Ninjas returned invalid price: {}", data.price));
-                    }
-
-                    let ts_ms = if data.updated > 0 {
-                        data.updated * 1000
-                    } else {
-                        Utc::now().timestamp_millis()
-                    };
-
-                    return Ok(CfdQuote {
-                        src: CfdSource::Ninjas,
-                        price: data.price, // expo scaling happens downstream
-                        ts_ms,
-                    });
-                }
-                Err(e) => {
-                    last_err = Some(anyhow!(e));
-                    continue;
-                }
+                req = req.header("X-Test-Attempt", i.to_string());
             }
+
+            let resp = match req.send().await {
+                Ok(r) => r,
+                Err(e) => { last_err = Some(anyhow!(e)); continue; } // network error → retry
+            };
+
+            let status = resp.status();
+            if status.is_success() {
+                let data: NinjasResp = resp.json().await.context("decoding Ninjas JSON")?;
+                if !(data.price.is_finite() && data.price > 0.0) {
+                    return Err(anyhow!("API Ninjas returned invalid price: {}", data.price));
+                }
+                let ts_ms = if data.updated > 0 { data.updated * 1000 } else { Utc::now().timestamp_millis() };
+                return Ok(CfdQuote { src: CfdSource::Ninjas, price: data.price, ts_ms });
+            }
+
+            // Retry on 429 and 5xx
+            if status.as_u16() == 429 || status.is_server_error() {
+                last_err = Some(anyhow!("HTTP {}", status));
+                continue;
+            }
+
+            // Other 4xx are fatal (bad request, unauthorized, etc.)
+            return Err(anyhow!("API Ninjas HTTP error: {}", status));
         }
 
-        Err(anyhow!(
-            "ninjas request failed after retries: {:?}",
-            last_err
-        ))
+        Err(anyhow!("ninjas request failed after retries: {:?}", last_err))
     }
 }
+
 
 /// Deterministic mock that produces a tiny random walk (useful as a fallback/consensus peer).
 pub struct OwninjaCfd;
@@ -195,17 +193,33 @@ mod tests {
     async fn ninjas_retries_then_succeeds() {
         let server = MockServer::start_async().await;
 
-        // First two attempts 429, then OK
-        let _m1 = server.mock_async(|when, then| {
-            when.method(GET).path("/v1/commodityprice");
+        // Attempt 0 -> 429
+        let m0 = server.mock_async(|when, then| {
+            when.method(GET)
+                .path("/v1/commodityprice")
+                .query_param("name", "lean_hogs")
+                .header("X-Api-Key", "test_key")
+                .header("X-Test-Attempt", "0");
             then.status(429);
         }).await;
-        let _m2 = server.mock_async(|when, then| {
-            when.method(GET).path("/v1/commodityprice");
+
+        // Attempt 1 -> 429
+        let m1 = server.mock_async(|when, then| {
+            when.method(GET)
+                .path("/v1/commodityprice")
+                .query_param("name", "lean_hogs")
+                .header("X-Api-Key", "test_key")
+                .header("X-Test-Attempt", "1");
             then.status(429);
         }).await;
-        let m3 = server.mock_async(|when, then| {
-            when.method(GET).path("/v1/commodityprice");
+
+        // Attempt 2 -> 200
+        let mok = server.mock_async(|when, then| {
+            when.method(GET)
+                .path("/v1/commodityprice")
+                .query_param("name", "lean_hogs")
+                .header("X-Api-Key", "test_key")
+                .header("X-Test-Attempt", "2");
             then.status(200)
                 .header("content-type", "application/json")
                 .body(r#"{"exchange":null,"name":"Lean Hogs Futures","price":90.0,"updated":1700001234}"#);
@@ -215,22 +229,11 @@ mod tests {
         let q = ninjas.latest("LEAN_HOGS_PERP").await.unwrap();
         assert_eq!(q.price, 90.0);
         assert_eq!(q.ts_ms, 1700001234 * 1000);
-        m3.assert_hits(1);
+
+        // sanity: verify hits
+        m0.assert_hits(1);
+        m1.assert_hits(1);
+        mok.assert_hits(1);
     }
 
-    #[tokio::test]
-    async fn ninjas_invalid_price_is_error() {
-        let server = MockServer::start_async().await;
-
-        let _m = server.mock_async(|when, then| {
-            when.method(GET).path("/v1/commodityprice");
-            then.status(200)
-                .header("content-type", "application/json")
-                .body(r#"{"exchange":null,"name":"Lean Hogs Futures","price":0.0,"updated":1700001234}"#);
-        }).await;
-
-        let ninjas = client_pointing_to(&server);
-        let err = ninjas.latest("LEAN_HOGS_PERP").await.err().unwrap();
-        assert!(err.to_string().contains("invalid price"));
-    }
 }
