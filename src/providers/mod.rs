@@ -9,4 +9,9 @@ pub trait CfdProvider: Send + Sync {
     async fn latest(&self, symbol: &str) -> Result<CfdQuote, anyhow::Error>;
 }
 
+#[async_trait]
+pub trait CmeProvider: Send + Sync {
+    async fn latest_f1_f2(&self, symbol: &str) -> Result<CfdQuote, anyhow::Error>;
+}
+
 pub mod cfd;

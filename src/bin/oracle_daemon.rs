@@ -1,34 +1,79 @@
 // src/bin/oracle_daemon.rs
-use commodities_oracle::{
+use std::sync::Arc;
+use std::time::Duration;
+
+use autonom::{
     config::OracleConfig,
     oracle::Oracle,
+    providers::{
+        cfd::{NinjasCfd, OwninjaCfd},
+        CfdProvider,
+    },
     publishing::StdoutPublisher,
-    providers::{cfd::NinjasCfd, cme::DummyCme},
+    funding::FundingEngine,
 };
-use std::sync::Arc;
-use tracing_subscriber::EnvFilter;
-use autonom::oracle::Oracle;
-use autonom::publishing::StdoutPublisher;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_target(false)
-        .compact()
-        .init();
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // --- args: --config <path>, defaults to config/oracle.toml
+    let mut cfg_path = String::from("config/oracle.toml");
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--config" {
+            if let Some(p) = args.next() {
+                cfg_path = p;
+            }
+        }
+    }
 
-    let cfg = OracleConfig::default();
+    // --- load OracleConfig from TOML; fall back to Default if missing/unparseable
+    let cfg: OracleConfig = std::fs::read_to_string(&cfg_path)
+        .ok()
+        .and_then(|s| toml::from_str::<OracleConfig>(&s).ok())
+        .unwrap_or_else(|| {
+            eprintln!(
+                "warning: couldn't read/parse {}, using OracleConfig::default()",
+                cfg_path
+            );
+            OracleConfig::default()
+        });
 
-    let publisher = Arc::new(StdoutPublisher);
-    let cme = Arc::new(DummyCme);
-    let cfd = Arc::new(NinjasCfd {
-        http: reqwest::Client::new(),
-        api_key: std::env::var("API_NINJAS_KEY").unwrap_or_default(),
-    });
+    // --- publisher (no Arc; Publisher is implemented for the concrete type)
+    let publisher = StdoutPublisher {};
 
-    let oracle = Oracle::new(cfg, publisher, cme, cfd);
-    oracle.run().await;
+    // --- CFD providers (add/remove as your project implements them)
+    let cfds: Vec<Arc<dyn CfdProvider + Send + Sync>> = vec![
+        Arc::new(NinjasCfd {}),
+        Arc::new(OwninjaCfd {}),
+    ];
+
+    // --- funding engine (simple default; adjust if you expose config knobs)
+    let funding_engine = FundingEngine::new(
+        0.02,      // kappa: strength of mean-reversion toward the reference
+        0.005,     // cap: max funding magnitude per interval (e.g., 0.5%)
+        8 * 60 * 60, // interval_sec: typical 8h funding window
+    );
+
+    // NOTE: this matches your current Oracle::new signature:
+    // Oracle::new(cfg, publisher, cfds, funding_engine)
+    let mut oracle = Oracle::new(cfg, publisher, cfds, funding_engine);
+
+    // drive ticks at cfg.poll_ms (fallback 1000ms if unset/zero)
+    let tick_ms = if oracle.cfg.poll_ms == 0 { 1000 } else { oracle.cfg.poll_ms };
+    let mut ticker = tokio::time::interval(Duration::from_millis(tick_ms as u64));
+
+    // simple loop with Ctrl-C shutdown
+    loop {
+        tokio::select! {
+            _ = ticker.tick() => {
+                oracle.tick_once().await;
+            }
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("received Ctrl-C, exiting");
+                break;
+            }
+        }
+    }
+
     Ok(())
 }
-
