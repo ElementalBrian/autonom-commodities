@@ -7,6 +7,7 @@ use crate::types::CfdQuote;
 pub trait CfdProvider: Send + Sync {
     /// Return the latest CFD quote for the symbol.
     async fn latest(&self, symbol: &str) -> Result<CfdQuote, anyhow::Error>;
+    fn name(&self) -> &'static str;
 }
 
 #[async_trait]
