@@ -17,6 +17,13 @@ pub struct OracleConfig {
     pub funding_cap: f64,           // 0.004 per interval
     pub funding_interval_sec: u32,  // 8*3600
     pub trading_hours_only: bool,   // true
+    pub mode_cfd_only: bool,         // ← set true when you have no CME
+    pub cfd_min_fresh: usize,        // min providers needed (≥2 ideal)
+    pub cfd_tau_ms: u64,             // freshness decay for weighting (e.g. 20_000)
+    pub cfd_mad_k: f64,              // MAD threshold for outliers (e.g. 6.0)
+    pub cfd_dispersion_bps_max: u32, // if providers disagree > X bps, mark "degraded"
+    pub hours_guard: String,         // "cme" | "vendor" | "off"
+    pub max_step_per_tick: f64,      // e.g., 0.02 = 2% clamp vs last mark
 }
 
 impl Default for OracleConfig {
@@ -35,6 +42,13 @@ impl Default for OracleConfig {
             funding_cap: 0.004,
             funding_interval_sec: 8 * 3600,
             trading_hours_only: true,
+            mode_cfd_only: false,
+            cfd_min_fresh: 0,
+            cfd_tau_ms: 0,
+            cfd_mad_k: 0.0,
+            cfd_dispersion_bps_max: 0,
+            hours_guard: "".to_string(),
+            max_step_per_tick: 0.0,
         }
     }
 }
@@ -42,22 +56,23 @@ impl Default for OracleConfig {
 #[inline]
 pub fn ms(d: u64) -> std::time::Duration { Duration::from_millis(d) }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct OracleConfig {
-    // ...existing...
-    pub mode_cfd_only: bool,         // ← set true when you have no CME
-    pub cfd_min_fresh: usize,        // min providers needed (≥2 ideal)
-    pub cfd_tau_ms: u64,             // freshness decay for weighting (e.g. 20_000)
-    pub cfd_mad_k: f64,              // MAD threshold for outliers (e.g. 6.0)
-    pub cfd_dispersion_bps_max: u32, // if providers disagree > X bps, mark "degraded"
-    pub hours_guard: String,         // "cme" | "vendor" | "off"
-    pub max_step_per_tick: f64,      // e.g., 0.02 = 2% clamp vs last mark
-}
-
 impl Default for OracleConfig {
     fn default() -> Self {
         let mut c = Self {
             // ...existing defaults...
+            symbol: "".to_string(),
+            expo: 0,
+            poll_ms: 0,
+            cfd_twap_sec: 0,
+            cfd_median_sec: 0,
+            cfd_max_staleness_ms: 0,
+            cfd_jump_pct: 0.0,
+            cmf_target_days: 0.0,
+            roll_hike_im_pct: 0.0,
+            funding_kappa: 0.0,
+            funding_cap: 0.0,
+            funding_interval_sec: 0,
+            trading_hours_only: false,
             mode_cfd_only: false,
             cfd_min_fresh: 2,
             cfd_tau_ms: 20_000,
