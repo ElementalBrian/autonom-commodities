@@ -1,7 +1,8 @@
-use crate::types::{IndexTick, CfdQuote, ConsensusStats};
+// src/index/cfd_consensus.rs
 use crate::index::IndexError;
+use crate::types::{CfdQuote, ConsensusStats, IndexTick};
 
-/// Robust consensus over multiple CFD providers:
+/// Robust consensus over CFD quotes:
 /// 1) median anchor
 /// 2) MAD outlier rejection
 /// 3) freshness-weighted mean around the median
@@ -9,43 +10,30 @@ pub struct CfdConsensus {
     pub symbol: String,
     pub expo: i8,
     pub tau_ms: u64,
-    pub mad_k: f64, // keep quotes within +/- mad_k * MAD around median
+    pub mad_k: f64, // keep quotes within ± mad_k * MAD around median
 }
 
 impl CfdConsensus {
-    pub fn new(symbol: String, expo: i8, tau_ms: u64, mad_k: f64) -> Self {
-        Self { symbol, expo, tau_ms, mad_k }
-    }
-
-    /// Returns median price if at least one price present.
-    pub fn fuse(&self, mut prices: Vec<f64>) -> Option<f64> {
-        if prices.is_empty() {
-            return None;
-        }
-        prices.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let mid = prices.len() / 2;
-        if prices.len() % 2 == 1 {
-            Some(prices[mid])
-        } else {
-            Some((prices[mid - 1] + prices[mid]) / 2.0)
-        }
+    pub fn new<S: Into<String>>(symbol: S, expo: i8, tau_ms: u64, mad_k: f64) -> Self {
+        Self { symbol: symbol.into(), expo, tau_ms, mad_k }
     }
 
     fn median(prices: &mut [f64]) -> f64 {
-        prices.sort_by(|a,b| a.partial_cmp(b).unwrap());
-        prices[prices.len()/2]
+        prices.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        prices[prices.len() / 2]
     }
 
     fn mad(values: &[f64], med: f64) -> f64 {
         let mut devs: Vec<f64> = values.iter().map(|v| (v - med).abs()).collect();
-        devs.sort_by(|a,b| a.partial_cmp(b).unwrap());
-        let m = devs[devs.len()/2];
-        // Consistent MAD (≈ std) factor for normal: 1.4826
-        1.4826 * m.max(1e-9)
+        devs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let m = devs[devs.len() / 2];
+        (1.4826 * m).max(1e-9) // consistent MAD
     }
 
     pub fn build(&self, quotes: &[CfdQuote]) -> Result<(IndexTick, ConsensusStats), IndexError> {
-        if quotes.is_empty() { return Err(IndexError::NoData); }
+        if quotes.is_empty() {
+            return Err(IndexError::NotEnoughData);
+        }
         let now = chrono::Utc::now().timestamp_millis();
 
         // anchor on median
@@ -56,28 +44,33 @@ impl CfdConsensus {
         // outlier filter
         let band = self.mad_k * mad;
         let mut kept = Vec::new();
-        let mut minp = f64::INFINITY; let mut maxp = f64::NEG_INFINITY;
+        let mut minp = f64::INFINITY;
+        let mut maxp = f64::NEG_INFINITY;
         for q in quotes {
             if (q.price - med).abs() <= band {
-                kept.push(*q);
+                kept.push(q);
                 if q.price < minp { minp = q.price; }
                 if q.price > maxp { maxp = q.price; }
             }
         }
-        if kept.is_empty() { return Err(IndexError::NoData); }
+        if kept.is_empty() {
+            return Err(IndexError::NotEnoughData);
+        }
 
         // freshness-weighted average around median
-        let mut num = 0.0; let mut den = 0.0;
+        let mut num = 0.0;
+        let mut den = 0.0;
         for q in &kept {
             let age = (now - q.ts_ms).unsigned_abs() as f64;
             let w = f64::exp(-age / self.tau_ms as f64);
-            // also damp weights far from median (gentle)
             let dev = ((q.price - med).abs() / (mad + 1e-9)).min(10.0);
             let w2 = w * f64::exp(-0.15 * dev);
             num += w2 * q.price;
             den += w2;
         }
-        if den <= 0.0 { return Err(IndexError::NoData); }
+        if den <= 0.0 {
+            return Err(IndexError::NotEnoughData);
+        }
         let fused = num / den;
 
         let spread_bps = (((maxp - minp) / med).abs() * 10_000.0).round() as u32;
@@ -105,4 +98,3 @@ impl CfdConsensus {
         Ok((tick, stats))
     }
 }
-

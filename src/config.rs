@@ -31,7 +31,7 @@ pub fn ms(d: u64) -> std::time::Duration { Duration::from_millis(d) }
 
 impl Default for OracleConfig {
     fn default() -> Self {
-        let mut c = Self {
+        let c = Self {
             symbol: "".to_string(),
             expo: 0,
             poll_ms: 0,

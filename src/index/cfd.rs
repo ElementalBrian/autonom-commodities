@@ -3,9 +3,9 @@
 use super::{IndexBuilder, IndexError};
 use crate::types::{IndexTick, CfdTick};
 use std::collections::VecDeque;
-use std::time::{Duration, SystemTime};
 
-const MAX_AGE: Duration = Duration::from_secs(20);
+/// Keep ticks for the last 20 seconds (in milliseconds).
+const MAX_AGE_MS: i64 = 20_000;
 
 pub struct CfdIndexBuilder {
     buf: VecDeque<CfdTick>,
@@ -20,13 +20,10 @@ impl CfdIndexBuilder {
         }
     }
 
-    fn prune(&mut self, now: SystemTime) {
+    fn prune(&mut self, now_ms: i64) {
         while let Some(front) = self.buf.front() {
-            if now
-                .duration_since(front.ts)
-                .map(|d| d > MAX_AGE)
-                .unwrap_or(false)
-            {
+            // Pop anything older than MAX_AGE_MS
+            if now_ms - front.ts_ms > MAX_AGE_MS {
                 self.buf.pop_front();
             } else {
                 break;
@@ -37,23 +34,34 @@ impl CfdIndexBuilder {
 
 impl IndexBuilder<CfdTick> for CfdIndexBuilder {
     fn build(&mut self, tick: CfdTick) -> Result<IndexTick, IndexError> {
-        let now = tick.ts;
-        let px = tick.price; // copy out what we need before moving `tick`
+        // Extract fields we need before moving `tick`
+        let now_ms = tick.ts_ms;
+        let px = tick.price;
 
+        // Ingest and prune old samples
         self.buf.push_back(tick);
-        self.prune(now);
+        self.prune(now_ms);
 
         if self.buf.is_empty() {
             return Err(IndexError::NotEnoughData);
         }
 
-        // Simple “index” = last price for now (placeholder)
+        // Simple rolling TWAP over the kept window
+        let (sum, n) = self
+            .buf
+            .iter()
+            .fold((0.0, 0usize), |(s, c), t| (s + t.price, c + 1));
+        let twap = sum / n as f64;
+
         self.last_px = Some(px);
 
         Ok(IndexTick {
-            ts: now,
-            price: px,
-            // add fields as needed by your IndexTick
+            symbol: "CFD".to_string(),          // set by caller if you want per-asset symbols
+            price: twap,                        // windowed average (not just last)
+            expo: -8,                           // typical commodity exponent
+            ts_ms: now_ms,
+            source: "cfd",                      // static str fits &'static str
+            window_sec: (MAX_AGE_MS / 1000) as u32,
         })
     }
 }

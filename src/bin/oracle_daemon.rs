@@ -7,6 +7,8 @@ use commodities_oracle::{
 };
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
+use autonom::oracle::Oracle;
+use autonom::publishing::StdoutPublisher;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

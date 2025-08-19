@@ -1,79 +1,26 @@
-// src/metrics.rs
+// src/index/mod.rs
 
-mod cmf;
+pub mod cfd;
+pub mod cmf;
+pub mod cfd_consensus;
 
-#[cfg(feature = "metrics")]
-mod imp {
-    use once_cell::sync::Lazy;
-    use prometheus::{
-        register_histogram_vec, register_int_counter_vec, HistogramVec, IntCounterVec,
-    };
+pub use cfd_consensus::CfdConsensus; // <— add this re-export
 
-    pub static REQUESTS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
-        register_int_counter_vec!(
-            "requests_total",
-            "HTTP requests received by endpoint",
-            &["endpoint"]
-        )
-        .unwrap()
-    });
+use thiserror::Error;
 
-    pub static RESPONSES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
-        register_int_counter_vec!(
-            "responses_total",
-            "HTTP responses sent",
-            &["endpoint", "status"]
-        )
-        .unwrap()
-    });
-
-    pub static PROVIDER_ERRORS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
-        register_int_counter_vec!(
-            "provider_errors_total",
-            "Errors returned by providers",
-            &["provider", "reason"]
-        )
-        .unwrap()
-    });
-
-    pub static PROVIDER_LATENCY_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
-        register_histogram_vec!(
-            "provider_latency_seconds",
-            "Latency of provider fetches",
-            &["provider"],
-            vec![0.02, 0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0]
-        )
-        .unwrap()
-    });
-
-    pub fn init() {}
+#[derive(Debug, Error)]
+pub enum IndexError {
+    #[error("not enough data")]
+    NotEnoughData,
+    #[error("stale input")]
+    StaleInput,
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
+    #[error("internal: {0}")]
+    Internal(String),
 }
 
-#[cfg(not(feature = "metrics"))]
-mod imp {
-    // No-op stand-ins so the rest of the code doesn't need #[cfg] everywhere.
-    pub struct IntCounterVec;
-    pub struct HistogramVec;
-    impl IntCounterVec {
-        pub fn with_label_values(&self, _labels: &[&str]) -> &Self {
-            self
-        }
-        pub fn inc(&self) {}
-    }
-    impl HistogramVec {
-        pub fn with_label_values(&self, _labels: &[&str]) -> &Self {
-            self
-        }
-        pub fn observe(&self, _v: f64) {}
-    }
-
-    pub static REQUESTS_TOTAL: IntCounterVec = IntCounterVec;
-    pub static RESPONSES_TOTAL: IntCounterVec = IntCounterVec;
-    pub static PROVIDER_ERRORS_TOTAL: IntCounterVec = IntCounterVec;
-    pub static PROVIDER_LATENCY_SECONDS: HistogramVec = HistogramVec;
-
-    pub fn init() {}
+// Generic builder trait many index builders can implement.
+pub trait IndexBuilder<I> {
+    fn build(&mut self, tick: I) -> Result<crate::types::IndexTick, IndexError>;
 }
-
-// Re-export unified API
-pub use imp::*;
